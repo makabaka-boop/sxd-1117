@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import date as date_type
 from fastapi import APIRouter, HTTPException, status, Depends
 from app.models import (
     EquipmentCreate, EquipmentUpdate, EquipmentOut,
@@ -82,8 +83,13 @@ def list_time_slots(equipment_id: str = None, slot_date: str = None):
     if equipment_id:
         results = [s for s in results if s["equipment_id"] == equipment_id]
     if slot_date:
-        from datetime import date as date_type
-        d = date_type.fromisoformat(slot_date)
+        try:
+            d = date_type.fromisoformat(slot_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"参数 slot_date 格式错误，正确格式为 YYYY-MM-DD，收到的值：{slot_date}",
+            )
         results = [s for s in results if s["slot_date"] == d]
     return [TimeSlotOut(**s) for s in results]
 
