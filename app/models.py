@@ -24,6 +24,23 @@ class AuditAction(str, Enum):
     cancelled = "cancelled"
     checked_in = "checked_in"
     released = "released"
+    maintenance_created = "maintenance_created"
+    maintenance_updated = "maintenance_updated"
+    maintenance_closed = "maintenance_closed"
+
+
+class MaintenanceType(str, Enum):
+    preventive = "preventive"
+    corrective = "corrective"
+    calibration = "calibration"
+    other = "other"
+
+
+class MaintenanceStatus(str, Enum):
+    scheduled = "scheduled"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
 
 
 class UserCreate(BaseModel):
@@ -127,7 +144,8 @@ class ReservationOut(BaseModel):
 
 class AuditLogOut(BaseModel):
     id: str
-    reservation_id: str
+    reservation_id: Optional[str] = None
+    maintenance_id: Optional[str] = None
     action: AuditAction
     operator_id: str
     operator_role: UserRole
@@ -143,3 +161,52 @@ class ConflictItem(BaseModel):
 
 class ConflictReport(BaseModel):
     conflicts: list[ConflictItem]
+
+
+class DeviceMaintenanceCreate(BaseModel):
+    equipment_id: str
+    maintenance_type: MaintenanceType
+    reason: str
+    start_datetime: datetime
+    end_datetime: datetime
+    remark: str = ""
+
+
+class DeviceMaintenanceUpdate(BaseModel):
+    maintenance_type: Optional[MaintenanceType] = None
+    reason: Optional[str] = None
+    start_datetime: Optional[datetime] = None
+    end_datetime: Optional[datetime] = None
+    remark: Optional[str] = None
+    status: Optional[MaintenanceStatus] = None
+    version: int
+
+
+class DeviceMaintenanceClose(BaseModel):
+    version: int
+
+
+class DeviceMaintenanceOut(BaseModel):
+    id: str
+    equipment_id: str
+    maintenance_type: MaintenanceType
+    reason: str
+    start_datetime: datetime
+    end_datetime: datetime
+    status: MaintenanceStatus
+    remark: str
+    creator_id: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class MaintenanceConflictReservation(BaseModel):
+    reservation_id: str
+    equipment_id: str
+    patient_id: str
+    therapist_id: str
+    status: ReservationStatus
+    slot_date: date
+    start_time: time
+    end_time: time

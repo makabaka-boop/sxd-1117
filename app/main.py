@@ -3,17 +3,19 @@ from app.routes.auth import router as auth_router
 from app.routes.equipment import router as equipment_router
 from app.routes.reservation import router as reservation_router
 from app.routes.audit import router as audit_router
+from app.routes.maintenance import router as maintenance_router
 
 app = FastAPI(
     title="康复科室训练设备预约管理系统",
-    description="管理训练设备的预约、签到、占用和释放，支持乐观锁防并发",
-    version="1.0.0",
+    description="管理训练设备的预约、签到、占用和释放，支持乐观锁防并发；支持设备维护停用管理，维护时段内禁止新增/改签预约，提供维护日历视图与冲突检测",
+    version="2.0.0",
 )
 
 app.include_router(auth_router)
 app.include_router(equipment_router)
 app.include_router(reservation_router)
 app.include_router(audit_router)
+app.include_router(maintenance_router)
 
 
 @app.get("/health")

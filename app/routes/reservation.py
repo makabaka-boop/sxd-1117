@@ -10,7 +10,7 @@ from app.cache import store
 from app.auth import require_role, get_current_user
 from app.services.conflict import (
     check_equipment_slot_overlap, check_patient_time_overlap,
-    add_audit, detect_all_conflicts,
+    add_audit, detect_all_conflicts, check_reservation_in_maintenance,
 )
 
 router = APIRouter(prefix="/api/reservations", tags=["预约管理"])
@@ -55,6 +55,10 @@ def create_reservation(req: ReservationCreate, current_user: dict = Depends(requ
     patient_overlap = check_patient_time_overlap(req.patient_id, slot["slot_date"], slot["start_time"], slot["end_time"])
     if patient_overlap:
         raise HTTPException(status_code=409, detail="该患者在此时段已有预约（时间重叠）")
+    maintenance_conflicts = check_reservation_in_maintenance(req.equipment_id, slot["slot_date"], slot["start_time"], slot["end_time"])
+    if maintenance_conflicts:
+        conflict_ids = [m["id"] for m in maintenance_conflicts]
+        raise HTTPException(status_code=409, detail=f"该设备此时段处于维护中，维护单：{', '.join(conflict_ids)}")
 
     rid = store.next_id("reservation")
     now = datetime.now(timezone.utc)
@@ -153,6 +157,10 @@ def change_time_slot(reservation_id: str, req: ReservationChangeSlot, current_us
         raise HTTPException(status_code=409, detail="新时段与该设备已有预约时间重叠")
     if check_patient_time_overlap(r["patient_id"], new_slot["slot_date"], new_slot["start_time"], new_slot["end_time"], exclude_reservation_id=reservation_id):
         raise HTTPException(status_code=409, detail="该患者在新时段已有预约（时间重叠）")
+    maintenance_conflicts = check_reservation_in_maintenance(r["equipment_id"], new_slot["slot_date"], new_slot["start_time"], new_slot["end_time"])
+    if maintenance_conflicts:
+        conflict_ids = [m["id"] for m in maintenance_conflicts]
+        raise HTTPException(status_code=409, detail=f"新时段处于设备维护中，维护单：{', '.join(conflict_ids)}")
 
     old_slot_id = r["time_slot_id"]
     old_slot = store.time_slots.get(old_slot_id)

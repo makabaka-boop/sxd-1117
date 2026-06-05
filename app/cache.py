@@ -11,12 +11,14 @@ class _Store:
         self.time_slots: dict = {}
         self.reservations: dict = {}
         self.audit_logs: dict = {}
+        self.maintenance: dict = {}
         self._counters = {
             "user": 0,
             "equipment": 0,
             "time_slot": 0,
             "reservation": 0,
             "audit": 0,
+            "maintenance": 0,
         }
 
     def next_id(self, prefix: str) -> str:
