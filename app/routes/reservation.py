@@ -216,6 +216,12 @@ def checkin_reservation(reservation_id: str, req: ReservationCheckIn, current_us
             status_code=status.HTTP_409_CONFLICT,
             detail=f"版本冲突：当前版本为 {r['version']}，提交版本为 {req.version}，请刷新后重试",
         )
+    slot = store.time_slots.get(r["time_slot_id"])
+    if slot:
+        maintenance_conflicts = check_reservation_in_maintenance(r["equipment_id"], slot["slot_date"], slot["start_time"], slot["end_time"])
+        if maintenance_conflicts:
+            conflict_ids = [m["id"] for m in maintenance_conflicts]
+            raise HTTPException(status_code=409, detail=f"该设备此时段处于维护中，无法签到，维护单：{', '.join(conflict_ids)}")
     r["status"] = ReservationStatus.checked_in
     r["version"] += 1
     r["updated_at"] = datetime.now(timezone.utc)

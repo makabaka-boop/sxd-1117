@@ -9,7 +9,7 @@ from app.models import (
 from app.cache import store
 from app.auth import require_role
 from app.services.conflict import (
-    add_audit, check_maintenance_overlap, get_affected_reservations,
+    add_audit, check_maintenance_overlap, get_affected_reservations, _ensure_utc,
 )
 from app.models import AuditAction, ReservationStatus
 
@@ -33,8 +33,8 @@ def create_maintenance(req: DeviceMaintenanceCreate, current_user: dict = Depend
         "equipment_id": req.equipment_id,
         "maintenance_type": req.maintenance_type,
         "reason": req.reason,
-        "start_datetime": req.start_datetime,
-        "end_datetime": req.end_datetime,
+        "start_datetime": _ensure_utc(req.start_datetime),
+        "end_datetime": _ensure_utc(req.end_datetime),
         "status": MaintenanceStatus.scheduled,
         "remark": req.remark,
         "creator_id": current_user["id"],
@@ -80,7 +80,8 @@ def list_maintenance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"参数 date_from 格式错误，正确格式为 YYYY-MM-DD",
             )
-        results = [m for m in results if m["start_datetime"].date() >= d_from]
+        from_dt = datetime(d_from.year, d_from.month, d_from.day, tzinfo=timezone.utc)
+        results = [m for m in results if _ensure_utc(m["end_datetime"]) > from_dt]
     if date_to:
         try:
             d_to = date_type.fromisoformat(date_to)
@@ -89,7 +90,8 @@ def list_maintenance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"参数 date_to 格式错误，正确格式为 YYYY-MM-DD",
             )
-        results = [m for m in results if m["start_datetime"].date() <= d_to]
+        to_dt = datetime(d_to.year, d_to.month, d_to.day, 23, 59, 59, tzinfo=timezone.utc)
+        results = [m for m in results if _ensure_utc(m["start_datetime"]) <= to_dt]
 
     results.sort(key=lambda x: x["created_at"], reverse=True)
     return [DeviceMaintenanceOut(**m) for m in results]
@@ -119,7 +121,7 @@ def calendar_view(
                 detail=f"参数 date_from 格式错误，正确格式为 YYYY-MM-DD",
             )
         from_dt = datetime(d_from.year, d_from.month, d_from.day, tzinfo=timezone.utc)
-        results = [m for m in results if m["end_datetime"] > from_dt]
+        results = [m for m in results if _ensure_utc(m["end_datetime"]) > from_dt]
 
     if date_to:
         try:
@@ -130,7 +132,7 @@ def calendar_view(
                 detail=f"参数 date_to 格式错误，正确格式为 YYYY-MM-DD",
             )
         to_dt = datetime(d_to.year, d_to.month, d_to.day, 23, 59, 59, tzinfo=timezone.utc)
-        results = [m for m in results if m["start_datetime"] <= to_dt]
+        results = [m for m in results if _ensure_utc(m["start_datetime"]) <= to_dt]
 
     results.sort(key=lambda x: x["start_datetime"])
     return [DeviceMaintenanceOut(**m) for m in results]
@@ -181,9 +183,9 @@ def update_maintenance(maintenance_id: str, req: DeviceMaintenanceUpdate, curren
     if req.reason is not None:
         m["reason"] = req.reason
     if req.start_datetime is not None:
-        m["start_datetime"] = req.start_datetime
+        m["start_datetime"] = _ensure_utc(req.start_datetime)
     if req.end_datetime is not None:
-        m["end_datetime"] = req.end_datetime
+        m["end_datetime"] = _ensure_utc(req.end_datetime)
     if req.remark is not None:
         m["remark"] = req.remark
     if req.status is not None:

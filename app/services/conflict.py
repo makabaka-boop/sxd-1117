@@ -137,8 +137,14 @@ def detect_all_conflicts() -> list[dict]:
     return find_slot_conflicts() + find_duplicate_patient_reservations() + find_release_omissions() + find_maintenance_reservation_conflicts()
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _datetime_range_overlap(start1: datetime, end1: datetime, start2: datetime, end2: datetime) -> bool:
-    return start1 < end2 and start2 < end1
+    return _ensure_utc(start1) < _ensure_utc(end2) and _ensure_utc(start2) < _ensure_utc(end1)
 
 
 def check_maintenance_overlap(equipment_id: str, start_dt: datetime, end_dt: datetime, exclude_maintenance_id: str | None = None) -> bool:
