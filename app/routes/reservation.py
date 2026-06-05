@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as date_type
 from fastapi import APIRouter, HTTPException, status, Query, Depends
 from app.models import (
     ReservationCreate, ReservationChangeSlot, ReservationCancel,
@@ -9,11 +9,31 @@ from app.models import (
 from app.cache import store
 from app.auth import require_role, get_current_user
 from app.services.conflict import (
-    check_slot_available, check_patient_duplicate,
+    check_equipment_slot_overlap, check_patient_time_overlap,
     add_audit, detect_all_conflicts,
 )
 
 router = APIRouter(prefix="/api/reservations", tags=["预约管理"])
+
+
+def _check_therapist_owner(reservation: dict, current_user: dict):
+    if current_user["role"] == UserRole.admin:
+        return
+    if reservation["therapist_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能操作自己创建的预约",
+        )
+
+
+def _parse_date_param(value: str, param_name: str) -> date_type:
+    try:
+        return date_type.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"参数 {param_name} 格式错误，正确格式为 YYYY-MM-DD，收到的值：{value}",
+        )
 
 
 @router.post("", response_model=ReservationOut)
@@ -29,10 +49,12 @@ def create_reservation(req: ReservationCreate, current_user: dict = Depends(requ
     patient = store.users.get(req.patient_id)
     if not patient or patient["role"] != UserRole.patient:
         raise HTTPException(status_code=400, detail="患者ID无效")
-    if not check_slot_available(req.time_slot_id):
-        raise HTTPException(status_code=409, detail="该时段已被预约")
-    if check_patient_duplicate(req.patient_id, req.time_slot_id):
-        raise HTTPException(status_code=409, detail="该患者在此时段已有预约")
+    overlap = check_equipment_slot_overlap(req.equipment_id, slot["slot_date"], slot["start_time"], slot["end_time"])
+    if overlap:
+        raise HTTPException(status_code=409, detail="该设备此时段与已有预约时间重叠")
+    patient_overlap = check_patient_time_overlap(req.patient_id, slot["slot_date"], slot["start_time"], slot["end_time"])
+    if patient_overlap:
+        raise HTTPException(status_code=409, detail="该患者在此时段已有预约（时间重叠）")
 
     rid = store.next_id("reservation")
     now = datetime.now(timezone.utc)
@@ -78,23 +100,11 @@ def list_reservations(
     if status_filter:
         results = [r for r in results if r["status"] == status_filter]
     if date_from:
-        from datetime import date as date_type
-        d_from = date_type.fromisoformat(date_from)
-        filtered = []
-        for r in results:
-            slot = store.time_slots.get(r["time_slot_id"])
-            if slot and slot["slot_date"] >= d_from:
-                filtered.append(r)
-        results = filtered
+        d_from = _parse_date_param(date_from, "date_from")
+        results = [r for r in results if (slot := store.time_slots.get(r["time_slot_id"])) and slot["slot_date"] >= d_from]
     if date_to:
-        from datetime import date as date_type
-        d_to = date_type.fromisoformat(date_to)
-        filtered = []
-        for r in results:
-            slot = store.time_slots.get(r["time_slot_id"])
-            if slot and slot["slot_date"] <= d_to:
-                filtered.append(r)
-        results = filtered
+        d_to = _parse_date_param(date_to, "date_to")
+        results = [r for r in results if (slot := store.time_slots.get(r["time_slot_id"])) and slot["slot_date"] <= d_to]
 
     return [ReservationOut(**r) for r in results]
 
@@ -126,6 +136,7 @@ def change_time_slot(reservation_id: str, req: ReservationChangeSlot, current_us
     r = store.reservations.get(reservation_id)
     if not r:
         raise HTTPException(status_code=404, detail="预约不存在")
+    _check_therapist_owner(r, current_user)
     if r["status"] not in (ReservationStatus.reserved,):
         raise HTTPException(status_code=400, detail="只能修改已预约状态的预约")
     if r["version"] != req.version:
@@ -138,10 +149,10 @@ def change_time_slot(reservation_id: str, req: ReservationChangeSlot, current_us
         raise HTTPException(status_code=404, detail="新时段不存在")
     if new_slot["equipment_id"] != r["equipment_id"]:
         raise HTTPException(status_code=400, detail="新时段不属于同一设备")
-    if not check_slot_available(req.new_time_slot_id):
-        raise HTTPException(status_code=409, detail="新时段已被预约")
-    if check_patient_duplicate(r["patient_id"], req.new_time_slot_id, exclude_reservation_id=reservation_id):
-        raise HTTPException(status_code=409, detail="该患者在新时段已有预约")
+    if check_equipment_slot_overlap(r["equipment_id"], new_slot["slot_date"], new_slot["start_time"], new_slot["end_time"], exclude_reservation_id=reservation_id):
+        raise HTTPException(status_code=409, detail="新时段与该设备已有预约时间重叠")
+    if check_patient_time_overlap(r["patient_id"], new_slot["slot_date"], new_slot["start_time"], new_slot["end_time"], exclude_reservation_id=reservation_id):
+        raise HTTPException(status_code=409, detail="该患者在新时段已有预约（时间重叠）")
 
     old_slot_id = r["time_slot_id"]
     old_slot = store.time_slots.get(old_slot_id)
@@ -163,6 +174,7 @@ def cancel_reservation(reservation_id: str, req: ReservationCancel, current_user
     r = store.reservations.get(reservation_id)
     if not r:
         raise HTTPException(status_code=404, detail="预约不存在")
+    _check_therapist_owner(r, current_user)
     if r["status"] not in (ReservationStatus.reserved,):
         raise HTTPException(status_code=400, detail="只能取消已预约状态的预约")
     if r["version"] != req.version:
@@ -188,6 +200,7 @@ def checkin_reservation(reservation_id: str, req: ReservationCheckIn, current_us
     r = store.reservations.get(reservation_id)
     if not r:
         raise HTTPException(status_code=404, detail="预约不存在")
+    _check_therapist_owner(r, current_user)
     if r["status"] != ReservationStatus.reserved:
         raise HTTPException(status_code=400, detail="只能对已预约状态的记录签到")
     if r["version"] != req.version:
@@ -209,6 +222,7 @@ def release_reservation(reservation_id: str, req: ReservationRelease, current_us
     r = store.reservations.get(reservation_id)
     if not r:
         raise HTTPException(status_code=404, detail="预约不存在")
+    _check_therapist_owner(r, current_user)
     if r["status"] != ReservationStatus.checked_in:
         raise HTTPException(status_code=400, detail="只能释放已签到的记录")
     if r["version"] != req.version:

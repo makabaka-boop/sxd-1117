@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime, date, timezone
+from datetime import datetime, date, time, timezone
 from app.cache import store
 from app.models import ReservationStatus, AuditAction, UserRole
 
@@ -17,41 +17,101 @@ def add_audit(reservation_id: str, action: AuditAction, operator_id: str, operat
     }
 
 
+def _time_ranges_overlap(d1: date, s1: time, e1: time, d2: date, s2: time, e2: time) -> bool:
+    if d1 != d2:
+        return False
+    return s1 < e2 and s2 < e1
+
+
+def check_equipment_slot_overlap(equipment_id: str, slot_date: date, start_time: time, end_time: time, exclude_reservation_id: str = None) -> bool:
+    for r in store.reservations.values():
+        if r["status"] not in (ReservationStatus.reserved, ReservationStatus.checked_in):
+            continue
+        if r["equipment_id"] != equipment_id:
+            continue
+        if exclude_reservation_id and r["id"] == exclude_reservation_id:
+            continue
+        slot = store.time_slots.get(r["time_slot_id"])
+        if not slot:
+            continue
+        if _time_ranges_overlap(slot_date, start_time, end_time, slot["slot_date"], slot["start_time"], slot["end_time"]):
+            return True
+    return False
+
+
+def check_patient_time_overlap(patient_id: str, slot_date: date, start_time: time, end_time: time, exclude_reservation_id: str = None) -> bool:
+    for r in store.reservations.values():
+        if r["status"] not in (ReservationStatus.reserved, ReservationStatus.checked_in):
+            continue
+        if r["patient_id"] != patient_id:
+            continue
+        if exclude_reservation_id and r["id"] == exclude_reservation_id:
+            continue
+        slot = store.time_slots.get(r["time_slot_id"])
+        if not slot:
+            continue
+        if _time_ranges_overlap(slot_date, start_time, end_time, slot["slot_date"], slot["start_time"], slot["end_time"]):
+            return True
+    return False
+
+
 def find_slot_conflicts() -> list[dict]:
     conflicts = []
-    slot_reservations: dict[str, list[dict]] = {}
-    for r in store.reservations.values():
-        if r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in):
-            key = r["time_slot_id"]
-            slot_reservations.setdefault(key, []).append(r)
-
-    for slot_id, reservations in slot_reservations.items():
-        if len(reservations) > 1:
-            conflicts.append({
-                "type": "slot_conflict",
-                "message": f"时段 {slot_id} 存在 {len(reservations)} 个有效预约",
-                "related_ids": [r["id"] for r in reservations],
-            })
+    active = [r for r in store.reservations.values() if r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in)]
+    seen = set()
+    for i, r1 in enumerate(active):
+        slot1 = store.time_slots.get(r1["time_slot_id"])
+        if not slot1:
+            continue
+        for j, r2 in enumerate(active):
+            if j <= i:
+                continue
+            if r1["equipment_id"] != r2["equipment_id"]:
+                continue
+            slot2 = store.time_slots.get(r2["time_slot_id"])
+            if not slot2:
+                continue
+            pair_key = tuple(sorted([r1["id"], r2["id"]]))
+            if pair_key in seen:
+                continue
+            if _time_ranges_overlap(slot1["slot_date"], slot1["start_time"], slot1["end_time"],
+                                    slot2["slot_date"], slot2["start_time"], slot2["end_time"]):
+                seen.add(pair_key)
+                conflicts.append({
+                    "type": "slot_conflict",
+                    "message": f"设备 {r1['equipment_id']} 上预约 {r1['id']} 与 {r2['id']} 时段重叠",
+                    "related_ids": [r1["id"], r2["id"]],
+                })
     return conflicts
 
 
 def find_duplicate_patient_reservations() -> list[dict]:
     conflicts = []
-    patient_slot: dict[str, list[dict]] = {}
-    for r in store.reservations.values():
-        if r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in):
-            key = f"{r['patient_id']}_{r['time_slot_id']}"
-            patient_slot.setdefault(key, []).append(r)
-
-    for key, reservations in patient_slot.items():
-        if len(reservations) > 1:
-            patient_id = reservations[0]["patient_id"]
-            slot_id = reservations[0]["time_slot_id"]
-            conflicts.append({
-                "type": "duplicate_reservation",
-                "message": f"患者 {patient_id} 在时段 {slot_id} 存在重复预约",
-                "related_ids": [r["id"] for r in reservations],
-            })
+    active = [r for r in store.reservations.values() if r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in)]
+    seen = set()
+    for i, r1 in enumerate(active):
+        slot1 = store.time_slots.get(r1["time_slot_id"])
+        if not slot1:
+            continue
+        for j, r2 in enumerate(active):
+            if j <= i:
+                continue
+            if r1["patient_id"] != r2["patient_id"]:
+                continue
+            slot2 = store.time_slots.get(r2["time_slot_id"])
+            if not slot2:
+                continue
+            pair_key = tuple(sorted([r1["id"], r2["id"]]))
+            if pair_key in seen:
+                continue
+            if _time_ranges_overlap(slot1["slot_date"], slot1["start_time"], slot1["end_time"],
+                                    slot2["slot_date"], slot2["start_time"], slot2["end_time"]):
+                seen.add(pair_key)
+                conflicts.append({
+                    "type": "duplicate_reservation",
+                    "message": f"患者 {r1['patient_id']} 的预约 {r1['id']} 与 {r2['id']} 时间重叠（跨设备）",
+                    "related_ids": [r1["id"], r2["id"]],
+                })
     return conflicts
 
 
@@ -74,21 +134,3 @@ def find_release_omissions() -> list[dict]:
 
 def detect_all_conflicts() -> list[dict]:
     return find_slot_conflicts() + find_duplicate_patient_reservations() + find_release_omissions()
-
-
-def check_slot_available(time_slot_id: str, exclude_reservation_id: str = None) -> bool:
-    for r in store.reservations.values():
-        if r["time_slot_id"] == time_slot_id and r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in):
-            if exclude_reservation_id and r["id"] == exclude_reservation_id:
-                continue
-            return False
-    return True
-
-
-def check_patient_duplicate(patient_id: str, time_slot_id: str, exclude_reservation_id: str = None) -> bool:
-    for r in store.reservations.values():
-        if r["patient_id"] == patient_id and r["time_slot_id"] == time_slot_id and r["status"] in (ReservationStatus.reserved, ReservationStatus.checked_in):
-            if exclude_reservation_id and r["id"] == exclude_reservation_id:
-                continue
-            return True
-    return False
